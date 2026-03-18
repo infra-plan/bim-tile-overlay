@@ -1,0 +1,5 @@
+examples/
+.gitignore
+.DS_Store
+Thumbs.db
+*.tgz

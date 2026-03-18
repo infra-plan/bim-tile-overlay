@@ -1,0 +1,59 @@
+{
+  "name": "bim-tile-overlay",
+  "version": "1.0.0",
+  "description": "Overlay web map tiles (OSM, aerial imagery, custom XYZ) onto Autodesk APS Viewer as a camera-synced 3D ground plane",
+  "author": "Infra Plan",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.js",
+  "module": "src/index.js",
+  "types": "types/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.js",
+      "require": "./src/index.js",
+      "types": "./types/index.d.ts"
+    }
+  },
+  "files": [
+    "src/",
+    "types/",
+    "LICENSE",
+    "README.md"
+  ],
+  "keywords": [
+    "autodesk",
+    "forge",
+    "aps",
+    "bim",
+    "viewer",
+    "tiles",
+    "map",
+    "overlay",
+    "three-js",
+    "gis",
+    "web-mercator",
+    "orthophoto",
+    "osm"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/infra-plan/bim-tile-overlay.git"
+  },
+  "peerDependencies": {
+    "proj4": ">=2.6.0"
+  },
+  "peerDependenciesMeta": {
+    "proj4": {
+      "optional": false
+    }
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "proj4": "^2.20.4",
+    "vitest": "^4.1.0"
+  }
+}

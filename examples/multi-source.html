@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>bim-tile-overlay - Multiple Tile Sources</title>
+    <link rel="stylesheet" href="https://developer.api.autodesk.com/modelderivative/v2/viewers/7.*/style.min.css">
+    <style>
+        body { margin: 0; overflow: hidden; }
+        #viewer { width: 100vw; height: 100vh; }
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 10;
+            background: rgba(255,255,255,0.95);
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-family: sans-serif;
+            font-size: 14px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        }
+        #controls label { display: block; margin-bottom: 8px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div id="viewer"></div>
+    <div id="controls">
+        <strong>Map Layers</strong>
+        <label>
+            <input type="checkbox" id="toggle-osm">
+            OpenStreetMap
+        </label>
+        <label>
+            <input type="checkbox" id="toggle-aerial">
+            Aerial Imagery (custom server)
+        </label>
+    </div>
+
+    <script src="https://developer.api.autodesk.com/modelderivative/v2/viewers/7.*/viewer3D.min.js"></script>
+    <!-- Import map tells the browser how to resolve bare 'proj4' import -->
+    <script type="importmap">
+    {
+        "imports": {
+            "proj4": "https://cdn.jsdelivr.net/npm/proj4@2.20.3/+esm"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import { TileOverlay } from '../src/tile-overlay.js';
+        import { CoordinateTransformer } from '../src/coordinate-transformer.js';
+
+        // ── Configuration ────────────────────────────────────────────
+        const ACCESS_TOKEN = 'YOUR_ACCESS_TOKEN';
+        const MODEL_URN = 'YOUR_MODEL_URN';
+        const LOCAL_CRS = '+proj=tmerc +lat_0=0 +lon_0=16.5 +k=0.9999 +x_0=500000 +y_0=0 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs';
+
+        // ── Initialize Viewer ────────────────────────────────────────
+        const viewerDiv = document.getElementById('viewer');
+        Autodesk.Viewing.Initializer({
+            env: 'AutodeskProduction2',
+            api: 'streamingV2',
+            getAccessToken: (cb) => cb(ACCESS_TOKEN, 3600),
+        }, () => {
+            const viewer = new Autodesk.Viewing.GuiViewer3D(viewerDiv);
+            viewer.start();
+
+            Autodesk.Viewing.Document.load(`urn:${MODEL_URN}`, (doc) => {
+                const viewable = doc.getRoot().getDefaultGeometry();
+                viewer.loadDocumentNode(doc, viewable).then(() => {
+                    const transformer = CoordinateTransformer.fromAPSViewer(viewer, LOCAL_CRS);
+                    const modelBounds = transformer.getModelBoundsLL84();
+
+                    // ── OSM overlay (expanded bounds) ────────────
+                    const lonSpan = modelBounds.east - modelBounds.west;
+                    const latSpan = modelBounds.north - modelBounds.south;
+
+                    const osmOverlay = new TileOverlay(viewer, transformer, {
+                        urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                        zoomRange: [14, 17],
+                        maxBounds: {
+                            west: modelBounds.west - lonSpan * 10,
+                            south: modelBounds.south - latSpan * 10,
+                            east: modelBounds.east + lonSpan * 10,
+                            north: modelBounds.north + latSpan * 10,
+                        },
+                        sceneName: 'osm-tiles',
+                        // Place OSM slightly below aerial so aerial renders on top
+                        groundZ: transformer.modelBBox.min.z - 6,
+                    });
+
+                    // ── Aerial imagery overlay (server-provided bounds) ──
+                    // This example fetches bounds from a custom tile server.
+                    // Replace the URL with your own tile server endpoint.
+                    fetch('/tiles/dof/bounds?z=19')
+                        .then(r => r.json())
+                        .then(aerialBounds => {
+                            const aerialOverlay = new TileOverlay(viewer, transformer, {
+                                urlTemplate: '/tiles/dof/{z}/{x}/{y}',
+                                zoomRange: [10, 21],
+                                maxBounds: aerialBounds,
+                                sceneName: 'aerial-tiles',
+                                groundZ: transformer.modelBBox.min.z - 5,
+                                // Higher detail for aerial imagery
+                                zoomScaleFactor: 14,
+                            });
+
+                            document.getElementById('toggle-aerial').addEventListener('change', (e) => {
+                                e.target.checked ? aerialOverlay.enable() : aerialOverlay.disable();
+                            });
+                        })
+                        .catch(() => {
+                            document.getElementById('toggle-aerial').disabled = true;
+                            document.getElementById('toggle-aerial').parentElement.title = 'Aerial tile server not available';
+                        });
+
+                    // ── Toggle handlers ───────────────────────────
+                    document.getElementById('toggle-osm').addEventListener('change', (e) => {
+                        e.target.checked ? osmOverlay.enable() : osmOverlay.disable();
+                    });
+                });
+            });
+        });
+    </script>
+</body>
+</html>
