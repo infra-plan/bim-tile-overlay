@@ -148,6 +148,23 @@ import { lonLatToTile, tileToLonLat, getViewportBounds, createTileCache } from '
 | `getViewportBounds(camera, transformer, options)` | Camera frustum → geographic bounds + zoom |
 | `createTileCache(maxSize?)` | LRU cache; frees an entry's `canvas` memory on eviction |
 
+## Upgrading from 1.x
+
+Version 2 shows each tile as its own mesh, with detail depending on distance
+from the camera, instead of one stitched texture at a single zoom level. The
+constructor and methods are unchanged, but some options behave differently:
+
+| 1.x option | In 2.x |
+|------------|--------|
+| `zoomScaleFactor` | Ignored. Use `detailScale` (default `1`; higher = sharper tiles) |
+| `progressInterval` | Ignored. Tiles appear individually as they load |
+| `maxCacheSize` | Ignored. Use `maxCachedTiles` (default `1024` tile images) |
+| `zoomRange` | Now the range of zoom levels mixed within a view: finer near the camera, coarser far away |
+| `maxBounds` | Now only limits where tiles are shown |
+
+The overlay scene now contains one mesh per visible tile. Ignored options log
+a console warning. See [CHANGELOG.md](CHANGELOG.md) for the full list.
+
 ## Finding Your CRS
 
 Your BIM model needs a local Coordinate Reference System (CRS) for accurate positioning. Common ones:

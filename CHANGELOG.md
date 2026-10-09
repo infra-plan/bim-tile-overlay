@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 2.0.0 (unreleased)
+
+### Breaking changes
+
+- **One mesh per tile instead of one stitched plane.** The overlay scene now contains a mesh for each visible tile (typically 50–500) instead of a single textured plane. Code that inspects or modifies the overlay scene's contents needs updating.
+- **`zoomScaleFactor`, `progressInterval` and `maxCacheSize` are ignored.** They are still accepted, with a console warning, but no longer have any effect. Use `detailScale` instead of `zoomScaleFactor`, and `maxCachedTiles` instead of `maxCacheSize`; `progressInterval` has no replacement, as tiles appear individually as they load.
+- **A view mixes zoom levels.** `zoomRange` is now the range of zoom levels used within one view (finer near the camera), rather than the range one view-wide zoom level is clamped to. The zoom level no longer drops below `zoomRange[0]` for large views.
+- **`maxBounds` only limits where tiles are shown.** It is no longer used as the area to cover when the camera sees the horizon.
+- **Higher GPU memory in ground-level views.** Up to about 100 MB of textures with the default `maxTiles` (500), versus one stitched texture of up to about 45 MB before. Aerial views use about the same or less.
 
 ### Changes
 
