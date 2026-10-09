@@ -15,6 +15,8 @@
 - Camera changes during an in-flight tile update are no longer dropped; the update re-runs for the latest camera once the current one finishes
 - `CoordinateTransformer` no longer registers its CRS globally with proj4, so multiple transformers with different CRSs don't overwrite each other
 - Texture now refreshes after the final tile even when that tile fails to load
+- `CoordinateTransformer.fromAPSViewer()` treats a missing model `globalOffset` as zero instead of failing on the first transform
+- `exports` map simplified to `types` + `default` conditions
 
 ## 1.0.0 (2026-03-19)
 

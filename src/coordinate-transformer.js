@@ -57,8 +57,10 @@ export class CoordinateTransformer {
      * @returns {CoordinateTransformer}
      */
     static fromAPSViewer(viewer, crs) {
-        const metadata = viewer.model.getData().metadata;
-        const globalOffset = viewer.model.getData().globalOffset;
+        const data = viewer.model.getData();
+        const metadata = data.metadata;
+        // Models loaded without a global offset have none set; treat as zero
+        const globalOffset = data.globalOffset ?? { x: 0, y: 0, z: 0 };
         const modelBBox = viewer.model.getBoundingBox();
 
         // refPointTransform is always at metadata['custom values'].refPointTransform

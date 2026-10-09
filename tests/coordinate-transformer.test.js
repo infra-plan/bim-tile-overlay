@@ -250,5 +250,27 @@ describe('CoordinateTransformer', () => {
             expect(t).toBeInstanceOf(CoordinateTransformer);
             expect(t.globalOffset).toEqual({ x: 10, y: 20, z: 5 });
         });
+
+        it('defaults globalOffset to zero when the model has none', () => {
+            const mockViewer = {
+                model: {
+                    getData: () => ({
+                        metadata: {
+                            'custom values': {
+                                refPointTransform: createTestConfig().refPointTransform,
+                            },
+                        },
+                    }),
+                    getBoundingBox: () => ({
+                        min: { x: -50, y: -50, z: 0 },
+                        max: { x: 50, y: 50, z: 30 },
+                    }),
+                },
+            };
+
+            const t = CoordinateTransformer.fromAPSViewer(mockViewer, CRS_3765);
+            expect(t.globalOffset).toEqual({ x: 0, y: 0, z: 0 });
+            expect(Number.isFinite(t.lonLatToViewer(16.0, 45.8).x)).toBe(true);
+        });
     });
 });
