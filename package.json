@@ -1,6 +1,6 @@
 {
   "name": "bim-tile-overlay",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Overlay web map tiles (OSM, aerial imagery, custom XYZ) onto Autodesk APS Viewer as a camera-synced 3D ground plane",
   "author": "Infra Plan",
   "license": "MIT",
