@@ -12,14 +12,13 @@ Overlay web map tiles (OSM, aerial imagery, custom XYZ) onto an **Autodesk APS V
 
 Placing geographic map tiles under a BIM model in Autodesk Viewer requires:
 
-1. Extracting the camera frustum and projecting it onto a ground plane
+1. Working out which part of the ground the camera can see
 2. Converting between the viewer's internal coordinate system and WGS84
-3. Figuring out which map tiles cover the visible area at the right zoom level
-4. Fetching, stitching, and caching those tiles into a GPU-friendly texture
-5. Positioning a THREE.js plane in 3D space aligned with the geographic bounds
-6. Updating everything in real-time as the camera moves
+3. Choosing map tiles with detail that fits the distance: sharp near the camera, coarser far away
+4. Fetching and caching those tiles, and positioning each one in 3D space
+5. Updating everything in real-time as the camera moves, without the ground flickering
 
-This library handles all of that in ~500 lines of code.
+This library handles all of that.
 
 ## Quick Start
 
@@ -49,16 +48,21 @@ await overlay.enable();
 ## How It Works
 
 ```
-Camera frustum corners
-  → Ray-cast to ground plane (Z elevation)
-  → Convert hit points to WGS84 lon/lat
-  → Determine visible geographic bounds
-  → Calculate optimal tile zoom level
-  → Fetch XYZ tiles in parallel (reusing cached tiles)
-  → Stitch into single canvas texture
-  → Map onto THREE.js plane in viewer space
+Start from the whole world (zoom 0)
+  → Skip tiles outside maxBounds or outside the camera's view
+  → Split a tile into its 4 children while it would appear
+    larger than 256 px on screen (at its closest visible point)
+  → Fetch the chosen XYZ tiles in parallel (reusing cached tiles)
+  → Show each tile as its own THREE.js plane in viewer space
   → Update on camera change (debounced)
 ```
+
+Detail depends on distance, so a camera close to the ground looking toward the
+horizon gets sharp ground nearby and coarser tiles in the distance.
+
+While new tiles load, the tiles already on screen stay as fallbacks: after
+zooming in, the coarser tile stays underneath until its children arrive; after
+zooming out, the finer tiles stay until their parent arrives.
 
 **Coordinate pipeline:**
 ```
@@ -88,21 +92,23 @@ const overlay = new TileOverlay(viewer, transformer, options);
 | `maxBounds` | `GeoBounds` | *required* | Geographic bounds to clip tile fetching |
 | `groundZ` | `number` | `modelBBox.min.z - 5` | Z elevation of the ground plane |
 | `debounceMs` | `number` | `150` | Camera change debounce delay (ms) |
-| `maxCachedTiles` | `number` | `512` | Max individual tiles kept in memory; cached tiles are drawn immediately when they come back into view |
-| `zoomScaleFactor` | `number` | `12` | Tile detail vs. camera distance. Higher = more detail |
-| `progressInterval` | `number` | `5` | Texture refresh frequency during tile loading (every N tiles). Always fires on the last tile. Set to 1 for per-tile updates. |
+| `detailScale` | `number` | `1` | Tile detail vs. distance. Tiles are refined until they appear at most 256 / `detailScale` px on screen, so `2` gives finer tiles |
+| `maxTiles` | `number` | `500` | Max tiles shown at once. When reached, distant ground stays coarser |
+| `maxCachedTiles` | `number` | `1024` | Max loaded tile images kept in memory, so tiles coming back into view appear without downloading again |
 | `onTileError` | `function` | `console.warn` | Called with `{ url, x, y, zoom }` when a tile fails to load |
 | `sceneName` | `string` | `'bim-tile-overlay'` | Viewer overlay scene name |
+| `zoomScaleFactor` | `number` | — | *Deprecated, ignored.* Use `detailScale` |
+| `progressInterval` | `number` | — | *Deprecated, ignored.* Tiles appear individually as they load |
 | `maxCacheSize` | `number` | — | *Deprecated, ignored.* Use `maxCachedTiles` |
 
 **Methods:**
 
 | Method | Description |
 |--------|-------------|
-| `enable()` | Show the overlay and start tracking camera |
-| `disable()` | Hide the overlay and cancel pending tile downloads; the tile cache is kept for re-enabling |
+| `enable()` | Show the overlay and start tracking the camera; resolves once the visible tiles have loaded |
+| `disable()` | Remove the tiles and cancel pending downloads; the tile cache is kept, so re-enabling is instant |
 | `destroy()` | Fully dispose all GPU resources and cache |
-| `update()` | Force an immediate tile refresh |
+| `update()` | Update the tiles for the current camera now; resolves once they have loaded |
 
 ### `CoordinateTransformer`
 

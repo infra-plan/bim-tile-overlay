@@ -4,17 +4,19 @@
 
 ### Changes
 
-- Tiles are now cached individually (LRU, keyed by URL) instead of caching whole stitched canvases keyed by exact view bounds. Panning only downloads the new tiles; cached tiles are drawn immediately. Only the stitched canvas on screen is kept, and it's freed when replaced (previously up to 6 canvases of up to 8192² each).
-- New option `maxCachedTiles` (default 512). `maxCacheSize` is deprecated and ignored, with a console warning.
-- `disable()` cancels pending tile downloads, and an update cancelled this way never applies its partial result.
+- **Detail by distance.** Instead of one stitched texture at a single zoom level (chosen from the width of the visible area), each tile is now its own plane and detail depends on its distance from the camera. A camera close to the ground looking toward the horizon now gets sharp ground nearby (previously the whole view dropped to a coarse zoom, e.g. 3.3 m/px instead of 0.05 m/px).
+- **No flicker while loading.** Tiles already on screen stay as fallbacks until their replacements load: the coarser tile after zooming in, the finer tiles after zooming out. Tiles on screen keep their own image, so evicting them from the cache can't blank them.
+- Tiles are cached individually (LRU, keyed by URL). Panning only downloads the new tiles, and returning to a previous view downloads nothing.
+- Downloads for tiles that leave the view are cancelled; `disable()` cancels all pending downloads.
+- New options: `detailScale` (default 1), `maxTiles` (default 500), `maxCachedTiles` (default 1024).
+- Deprecated and ignored, with a console warning: `zoomScaleFactor` (use `detailScale`), `progressInterval`, `maxCacheSize` (use `maxCachedTiles`).
+- `enable()` and `update()` resolve once the visible tiles have loaded or failed.
 
 ### Fixes
 
 - `getModelBoundsLL84()` now covers all four bounding-box corners, so bounds are correct for models rotated relative to north (previously zero-width at 45°)
 - Camera looking straight down (top view) no longer collapses the visible area to a single point; `getViewportBounds` now accepts an optional `camera.up`, which `TileOverlay` passes from the viewer camera
-- Camera changes during an in-flight tile update are no longer dropped; the update re-runs for the latest camera once the current one finishes
 - `CoordinateTransformer` no longer registers its CRS globally with proj4, so multiple transformers with different CRSs don't overwrite each other
-- Texture now refreshes after the final tile even when that tile fails to load
 - `CoordinateTransformer.fromAPSViewer()` treats a missing model `globalOffset` as zero instead of failing on the first transform
 - `exports` map simplified to `types` + `default` conditions
 
