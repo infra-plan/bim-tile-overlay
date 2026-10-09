@@ -4,12 +4,6 @@ import proj4 from 'proj4';
 // Most geographic CRS projections use meters, so we convert between the two.
 const FT_PER_M = 3.28084;
 
-// Internal identifier used to register the user's CRS with proj4.
-// proj4 requires CRS definitions to be registered under a name before use.
-// This name is arbitrary — we use a unique string to avoid colliding with
-// any CRS the consuming application may have already registered.
-const INTERNAL_CRS_ID = 'BIM_TILE_OVERLAY_CRS';
-
 /**
  * Transforms coordinates between WGS84 (lon/lat) and a BIM viewer's
  * internal coordinate system, using a local CRS as an intermediate step.
@@ -35,9 +29,13 @@ export class CoordinateTransformer {
     constructor(config) {
         const { crs, refPointTransform, globalOffset, modelBBox } = config;
 
-        // Register the user's CRS definition with proj4 under our internal name
-        this.crsId = INTERNAL_CRS_ID;
-        proj4.defs(this.crsId, crs);
+        // Per-instance WGS84 ↔ local CRS converter. Built from the definition
+        // directly rather than registered globally with proj4.defs(), so several
+        // transformers with different CRSs can coexist.
+        // EPSG:4326 (WGS84) is the universal standard for lon/lat coordinates and
+        // is always the input/output format; the local CRS is only used as an
+        // intermediate projection for accurate meter-based math.
+        this._converter = proj4('EPSG:4326', crs);
 
         this.globalOffset = globalOffset;
         this.modelBBox = modelBBox;
@@ -93,10 +91,7 @@ export class CoordinateTransformer {
      * @returns {{ x: number, y: number, z: number }} Viewer coordinates
      */
     lonLatToViewer(lon, lat, z = 0) {
-        // EPSG:4326 (WGS84) is the universal standard for lon/lat coordinates.
-        // It's always the input/output format — the configurable CRS (this.crsId)
-        // is only used as an intermediate local projection for accurate meter-based math.
-        const projected = proj4('EPSG:4326', this.crsId, [lon, lat]);
+        const projected = this._converter.forward([lon, lat]);
         const crsFtX = projected[0] * FT_PER_M;
         const crsFtY = projected[1] * FT_PER_M;
 
@@ -138,7 +133,7 @@ export class CoordinateTransformer {
         const northing = crsFtY / FT_PER_M;
 
         // Convert back from local CRS to WGS84 (EPSG:4326)
-        const lonLat = proj4(this.crsId, 'EPSG:4326', [easting, northing]);
+        const lonLat = this._converter.inverse([easting, northing]);
         return { lon: lonLat[0], lat: lonLat[1], z };
     }
 
@@ -151,14 +146,22 @@ export class CoordinateTransformer {
         const min = this.modelBBox.min;
         const max = this.modelBBox.max;
 
-        const sw = this.viewerToLonLat(min.x, min.y);
-        const ne = this.viewerToLonLat(max.x, max.y);
+        // All four corners are needed: when the model is rotated relative to
+        // north, the min/max corners alone don't span the geographic extent.
+        const corners = [
+            this.viewerToLonLat(min.x, min.y),
+            this.viewerToLonLat(max.x, min.y),
+            this.viewerToLonLat(min.x, max.y),
+            this.viewerToLonLat(max.x, max.y),
+        ];
+        const lons = corners.map((c) => c.lon);
+        const lats = corners.map((c) => c.lat);
 
         return {
-            west: Math.min(sw.lon, ne.lon),
-            south: Math.min(sw.lat, ne.lat),
-            east: Math.max(sw.lon, ne.lon),
-            north: Math.max(sw.lat, ne.lat),
+            west: Math.min(...lons),
+            south: Math.min(...lats),
+            east: Math.max(...lons),
+            north: Math.max(...lats),
         };
     }
 }

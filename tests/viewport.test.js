@@ -15,10 +15,6 @@ const defaultOptions = {
     groundZ: 0,
 };
 
-// NOTE: Camera must NOT look exactly straight down (forward parallel to worldUp Z),
-// otherwise the cross product with worldUp=(0,0,1) produces a zero right vector
-// (gimbal lock). Use a slight angle to avoid this.
-
 describe('getViewportBounds', () => {
     it('returns bounds when camera looks at ground at an angle', () => {
         const camera = {
@@ -161,5 +157,49 @@ describe('getViewportBounds', () => {
         // Should not throw and should produce valid bounds
         expect(result.bounds.west).toBeLessThan(result.bounds.east);
         expect(result.bounds.south).toBeLessThan(result.bounds.north);
+    });
+
+    describe('camera looking straight down', () => {
+        // Large maxBounds so clipping doesn't hide the footprint size
+        const wideOptions = {
+            ...defaultOptions,
+            maxBounds: { west: -1e4, south: -1e4, east: 1e4, north: 1e4 },
+        };
+        // At z=1000 with fov 45: half-height = 1000 * tan(22.5°) ≈ 414.2
+        const halfH = 1000 * Math.tan(Math.PI / 8);
+
+        it('returns the full footprint (north-up when no up vector is given)', () => {
+            const camera = {
+                position: { x: 0, y: 0, z: 1000 },
+                target: { x: 0, y: 0, z: 0 },
+                fov: 45,
+                aspect: 1.5,
+            };
+
+            const result = getViewportBounds(camera, identityTransformer, wideOptions);
+
+            expect(result.bounds.west).toBeCloseTo(-halfH * 1.5, 3);
+            expect(result.bounds.east).toBeCloseTo(halfH * 1.5, 3);
+            expect(result.bounds.south).toBeCloseTo(-halfH, 3);
+            expect(result.bounds.north).toBeCloseTo(halfH, 3);
+        });
+
+        it('uses camera.up to orient the footprint', () => {
+            const camera = {
+                position: { x: 0, y: 0, z: 1000 },
+                target: { x: 0, y: 0, z: 0 },
+                up: { x: 1, y: 0, z: 0 }, // screen top points east
+                fov: 45,
+                aspect: 1.5,
+            };
+
+            const result = getViewportBounds(camera, identityTransformer, wideOptions);
+
+            // Screen width now runs north-south
+            expect(result.bounds.west).toBeCloseTo(-halfH, 3);
+            expect(result.bounds.east).toBeCloseTo(halfH, 3);
+            expect(result.bounds.south).toBeCloseTo(-halfH * 1.5, 3);
+            expect(result.bounds.north).toBeCloseTo(halfH * 1.5, 3);
+        });
     });
 });

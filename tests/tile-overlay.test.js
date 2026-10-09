@@ -19,7 +19,8 @@ globalThis.THREE = {
         this.position = { set: mockSet };
         this.rotation = { z: 0 };
     },
-    Texture: function Texture() {
+    Texture: function Texture(image) {
+        this.image = image;
         this.needsUpdate = false;
         this.minFilter = null;
         this.dispose = mockDispose;
@@ -34,18 +35,24 @@ globalThis.Autodesk = {
     },
 };
 
-// Mock document.createElement for canvas
+// Mock document.createElement for canvas. Each call returns a fresh canvas
+// (sharing one 2D context) so tests can check which canvases are freed.
 const mockCtx = { drawImage: vi.fn() };
-const mockCanvas = {
-    width: 0,
-    height: 0,
-    getContext: vi.fn(() => mockCtx),
-};
+const createdCanvases = [];
 vi.stubGlobal('document', {
-    createElement: vi.fn(() => mockCanvas),
+    createElement: vi.fn(() => {
+        const canvas = { width: 0, height: 0, getContext: () => mockCtx };
+        createdCanvases.push(canvas);
+        return canvas;
+    }),
 });
 
-// Mock Image
+// Mock Image. URLs in failingUrls trigger onerror instead of onload.
+// While imageLoading.hold is true, loads stay pending until releaseHeldImages().
+const failingUrls = new Set();
+const requestedUrls = [];
+const heldImages = [];
+const imageLoading = { hold: false };
 class MockImage {
     constructor() {
         this.crossOrigin = '';
@@ -55,10 +62,22 @@ class MockImage {
     }
     set src(url) {
         this._src = url;
-        // Simulate async load — trigger onload in next microtask
-        if (url && this.onload) {
-            Promise.resolve().then(() => this.onload());
+        if (!url) return;
+        requestedUrls.push(url);
+        if (imageLoading.hold) {
+            heldImages.push(this);
+            return;
         }
+        // Simulate async load — trigger onload in next microtask
+        this._settle();
+    }
+    _settle() {
+        const url = this._src;
+        Promise.resolve().then(() => {
+            if (this._src !== url) return; // load was aborted
+            if (failingUrls.has(url)) this.onerror?.();
+            else this.onload?.();
+        });
     }
     get src() {
         return this._src;
@@ -66,20 +85,30 @@ class MockImage {
 }
 vi.stubGlobal('Image', MockImage);
 
+function releaseHeldImages() {
+    imageLoading.hold = false;
+    for (const img of heldImages.splice(0)) img._settle();
+}
+
+// Let all pending microtask chains (image loads, awaits) run to completion
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 const { TileOverlay } = await import('../src/tile-overlay.js');
 
 // ── Test helpers ──────────────────────────────────────────────
 
 function createMockViewer() {
     const listeners = {};
+    const camera = {
+        position: { x: 0, y: 0, z: 100 },
+        fov: 45,
+        aspect: 1.5,
+    };
+    const target = { x: 0, y: 0, z: 0 };
     return {
         navigation: {
-            getCamera: () => ({
-                position: { x: 0, y: 0, z: 100 },
-                fov: 45,
-                aspect: 1.5,
-            }),
-            getTarget: () => ({ x: 0, y: 0, z: 0 }),
+            getCamera: () => camera,
+            getTarget: () => target,
         },
         overlays: {
             addScene: vi.fn(),
@@ -99,6 +128,12 @@ function createMockViewer() {
             }
         }),
         _listeners: listeners,
+        // Move the camera, keeping it looking straight down
+        _moveCamera(x, y) {
+            camera.position = { x, y, z: 100 };
+            target.x = x;
+            target.y = y;
+        },
     };
 }
 
@@ -136,6 +171,11 @@ describe('TileOverlay', () => {
         viewer = createMockViewer();
         transformer = createMockTransformer();
         vi.clearAllMocks();
+        failingUrls.clear();
+        requestedUrls.length = 0;
+        createdCanvases.length = 0;
+        heldImages.length = 0;
+        imageLoading.hold = false;
     });
 
     describe('constructor', () => {
@@ -176,6 +216,13 @@ describe('TileOverlay', () => {
                 onTileError: errorCb,
             });
             expect(overlay._onTileError).toBe(errorCb);
+        });
+
+        it('warns that maxCacheSize is deprecated', () => {
+            const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+            new TileOverlay(viewer, transformer, { ...defaultOptions, maxCacheSize: 6 });
+            expect(warn).toHaveBeenCalledWith(expect.stringContaining('maxCacheSize'));
+            warn.mockRestore();
         });
 
         it('starts inactive', () => {
@@ -295,6 +342,177 @@ describe('TileOverlay', () => {
             await overlay.update();
             // After update, boundsKey should be set to the new calculated value
             expect(overlay._currentBoundsKey).not.toBe('cached-key');
+        });
+    });
+
+    describe('camera change during an update', () => {
+        it('re-runs the update for the latest camera once the current one finishes', async () => {
+            const overlay = new TileOverlay(viewer, transformer, defaultOptions);
+            await overlay.enable();
+            const fetchSpy = vi.spyOn(overlay, '_fetchAndStitchTiles');
+
+            viewer._moveCamera(20, 20);
+            const first = overlay._updateTiles(); // in flight
+            viewer._moveCamera(40, 40);
+            await overlay._updateTiles(); // camera moved while busy
+            await first;
+
+            expect(fetchSpy).toHaveBeenCalledTimes(2);
+            const [firstBounds] = fetchSpy.mock.calls[0];
+            const [secondBounds] = fetchSpy.mock.calls[1];
+            expect(secondBounds.west).toBeGreaterThan(firstBounds.west);
+            expect(overlay._isUpdating).toBe(false);
+        });
+
+        it('does not re-run after being disabled', async () => {
+            const overlay = new TileOverlay(viewer, transformer, defaultOptions);
+            await overlay.enable();
+            const fetchSpy = vi.spyOn(overlay, '_fetchAndStitchTiles');
+
+            viewer._moveCamera(20, 20);
+            const first = overlay._updateTiles();
+            viewer._moveCamera(40, 40);
+            overlay._updateTiles();
+            overlay.disable();
+            await first;
+
+            expect(fetchSpy).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    describe('progressive rendering', () => {
+        it('refreshes the texture after the last tile even when it fails', async () => {
+            const overlay = new TileOverlay(viewer, transformer, {
+                ...defaultOptions,
+                progressInterval: 2,
+            });
+            // Zoom 1 over the whole world: 2x2 tiles, loaded in order
+            // (0,0), (0,1), (1,0), (1,1). Fail the last one.
+            failingUrls.add('https://tile.example.com/1/1/1.png');
+            overlay._onTileError = vi.fn();
+
+            const events = [];
+            mockCtx.drawImage.mockImplementation(() => events.push('draw'));
+            const onProgress = vi.fn(() => events.push('progress'));
+
+            await overlay._fetchAndStitchTiles(
+                { west: -179, south: -80, east: 179, north: 80 },
+                1,
+                onProgress
+            );
+
+            expect(overlay._onTileError).toHaveBeenCalledTimes(1);
+            expect(events.filter((e) => e === 'draw')).toHaveLength(3);
+            expect(events.at(-1)).toBe('progress');
+        });
+    });
+
+    describe('tile cache', () => {
+        it('only fetches new tiles after a small pan', async () => {
+            const overlay = new TileOverlay(viewer, transformer, defaultOptions);
+            await overlay.enable();
+            const firstRequests = requestedUrls.splice(0);
+
+            viewer._moveCamera(5, 0); // about half a tile east
+            await overlay._updateTiles();
+            const secondRequests = requestedUrls.splice(0);
+
+            expect(firstRequests.length).toBeGreaterThan(0);
+            expect(secondRequests.length).toBeGreaterThan(0);
+            expect(secondRequests.length).toBeLessThan(firstRequests.length / 2);
+            for (const url of secondRequests) {
+                expect(firstRequests).not.toContain(url);
+            }
+        });
+
+        it('fetches nothing when returning to a previous view', async () => {
+            const overlay = new TileOverlay(viewer, transformer, defaultOptions);
+            await overlay.enable();
+            viewer._moveCamera(5, 0);
+            await overlay._updateTiles();
+            requestedUrls.length = 0;
+
+            viewer._moveCamera(0, 0);
+            await overlay._updateTiles();
+
+            expect(requestedUrls).toHaveLength(0);
+            expect(overlay._plane.material.map.image.width).toBeGreaterThan(0);
+        });
+
+        it('retries failed tiles on the next update', async () => {
+            const overlay = new TileOverlay(viewer, transformer, {
+                ...defaultOptions,
+                onTileError: vi.fn(),
+            });
+            failingUrls.add('https://tile.example.com/1/1/1.png');
+            const bounds = { west: -179, south: -80, east: 179, north: 80 };
+
+            await overlay._fetchAndStitchTiles(bounds, 1);
+            requestedUrls.length = 0;
+            await overlay._fetchAndStitchTiles(bounds, 1);
+
+            expect(requestedUrls).toEqual(['https://tile.example.com/1/1/1.png']);
+        });
+
+        it('limits the number of cached tiles to maxCachedTiles', async () => {
+            const overlay = new TileOverlay(viewer, transformer, {
+                ...defaultOptions,
+                maxCachedTiles: 3,
+            });
+
+            await overlay._fetchAndStitchTiles({ west: -179, south: -80, east: 179, north: 80 }, 1);
+
+            expect(overlay._cache.size()).toBe(3);
+        });
+
+        it('frees the previous stitched canvas when the view changes', async () => {
+            const overlay = new TileOverlay(viewer, transformer, defaultOptions);
+            await overlay.enable();
+            const firstCanvas = overlay._plane.material.map.image;
+
+            viewer._moveCamera(20, 20);
+            await overlay._updateTiles();
+
+            expect(overlay._plane.material.map.image).not.toBe(firstCanvas);
+            expect(firstCanvas.width).toBe(0);
+            expect(firstCanvas.height).toBe(0);
+        });
+    });
+
+    describe('pending tile loads', () => {
+        it('are cancelled on disable', async () => {
+            const overlay = new TileOverlay(viewer, transformer, defaultOptions);
+            imageLoading.hold = true;
+            const enabling = overlay.enable();
+            const pending = heldImages.slice();
+            expect(pending.length).toBeGreaterThan(0);
+
+            overlay.disable();
+            await enabling;
+
+            for (const img of pending) {
+                expect(img.src).toBe('');
+            }
+            expect(overlay._isUpdating).toBe(false);
+        });
+
+        it('a run cancelled by disable does not block a fresh run after re-enable', async () => {
+            const overlay = new TileOverlay(viewer, transformer, defaultOptions);
+            imageLoading.hold = true;
+            const enabling = overlay.enable();
+            const fetchSpy = vi.spyOn(overlay, '_fetchAndStitchTiles');
+
+            overlay.disable();
+            const reenabling = overlay.enable();
+            releaseHeldImages();
+            await enabling;
+            await reenabling;
+            await flush();
+
+            // The cancelled run's partial canvas must not be left on screen:
+            // a fresh run fetches the tiles again and draws a complete canvas.
+            expect(fetchSpy).toHaveBeenCalledTimes(1);
+            expect(overlay._currentBoundsKey).not.toBeNull();
         });
     });
 

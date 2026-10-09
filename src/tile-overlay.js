@@ -4,6 +4,7 @@ import { getViewportBounds } from './viewport.js';
 
 const TILE_SIZE = 256;
 const MAX_CANVAS_DIM = 8192; // GPU texture size limit
+const DEFAULT_MAX_CACHED_TILES = 512;
 
 /**
  * Overlays web map tiles onto an Autodesk APS Viewer as a camera-synced
@@ -35,7 +36,10 @@ export class TileOverlay {
      * @param {number} [options.groundZ] - Z elevation of the ground plane in viewer coordinates.
      *   Defaults to modelBBox.min.z - 5.
      * @param {number} [options.debounceMs=150] - Debounce delay for camera change updates (ms)
-     * @param {number} [options.maxCacheSize=6] - Maximum number of cached stitched tile canvases
+     * @param {number} [options.maxCachedTiles=512] - Maximum number of individual tiles kept in
+     *   memory. Cached tiles are drawn immediately when they come back into view.
+     * @param {number} [options.maxCacheSize] - Deprecated and ignored (stitched canvases are no
+     *   longer cached). Use `maxCachedTiles`.
      * @param {number} [options.zoomScaleFactor=12] - Controls tile detail level relative to camera
      *   distance. Higher values = more detailed tiles. See viewport.js for details.
      * @param {number} [options.progressInterval=5] - How often to update the visible plane while
@@ -59,11 +63,24 @@ export class TileOverlay {
         this._onTileError = options.onTileError || null;
         this._sceneName = options.sceneName || 'bim-tile-overlay';
 
-        this._cache = createTileCache(options.maxCacheSize || 6);
+        if (options.maxCacheSize !== undefined) {
+            console.warn(
+                '[bim-tile-overlay] `maxCacheSize` is deprecated and ignored; ' +
+                    'tiles are now cached individually. Use `maxCachedTiles` instead.'
+            );
+        }
+
+        // LRU cache of loaded tile images, keyed by URL
+        this._cache = createTileCache(options.maxCachedTiles ?? DEFAULT_MAX_CACHED_TILES);
         this._plane = null;
         this._currentBoundsKey = null;
         this._isActive = false;
         this._isUpdating = false;
+        this._updateQueued = false;
+        // Tile loads in flight, so disable() can cancel them
+        this._pendingLoads = new Set();
+        // Incremented on disable() so a run started before it never applies its result
+        this._generation = 0;
 
         // Bind methods for event listener add/remove
         this._debouncedUpdate = this._debounce(this._updateTiles.bind(this), this._debounceMs);
@@ -96,12 +113,15 @@ export class TileOverlay {
 
     /**
      * Disable the tile overlay. Removes the plane from the viewer and stops
-     * listening to camera changes. The plane and cache are preserved for re-enabling.
+     * listening to camera changes. Pending tile downloads are cancelled.
+     * The plane and tile cache are preserved for re-enabling.
      */
     disable() {
         if (!this._isActive) return;
         this._isActive = false;
         this._currentBoundsKey = null;
+        this._generation++;
+        this._cancelPendingLoads();
 
         this._viewer.removeEventListener(
             Autodesk.Viewing.CAMERA_CHANGE_EVENT,
@@ -122,7 +142,7 @@ export class TileOverlay {
         this.disable();
 
         if (this._plane) {
-            if (this._plane.material.map) this._plane.material.map.dispose();
+            this._disposeTexture(this._plane.material.map);
             if (this._plane.geometry) this._plane.geometry.dispose();
             if (this._plane.material) this._plane.material.dispose();
             this._plane = null;
@@ -143,12 +163,35 @@ export class TileOverlay {
     // ── Private methods ──────────────────────────────────────────────
 
     async _updateTiles() {
-        if (!this._isActive || this._isUpdating) return;
+        if (!this._isActive) return;
+        if (this._isUpdating) {
+            // An update is in flight; re-run once it finishes so the latest
+            // camera position isn't dropped.
+            this._updateQueued = true;
+            return;
+        }
+
+        this._isUpdating = true;
+        try {
+            do {
+                this._updateQueued = false;
+                await this._runUpdate();
+            } while (this._updateQueued && this._isActive);
+        } finally {
+            this._isUpdating = false;
+            this._updateQueued = false;
+        }
+    }
+
+    async _runUpdate() {
+        const generation = this._generation;
+        const isCurrent = () => this._isActive && generation === this._generation;
 
         const cam = this._viewer.navigation.getCamera();
         const camera = {
             position: cam.position,
             target: this._viewer.navigation.getTarget(),
+            up: cam.up,
             fov: cam.fov || 45,
             aspect: cam.aspect || window.innerWidth / window.innerHeight,
         };
@@ -164,42 +207,33 @@ export class TileOverlay {
         const boundsKey = `${viewport.zoom}_${bounds.west.toFixed(4)}_${bounds.south.toFixed(4)}_${bounds.east.toFixed(4)}_${bounds.north.toFixed(4)}`;
         if (boundsKey === this._currentBoundsKey) return;
 
-        this._isUpdating = true;
-        try {
-            let planeInitialized = false;
-            const onProgress = (partialResult) => {
-                if (!this._isActive) return;
-                if (!planeInitialized) {
-                    this._updatePlane(partialResult);
-                    planeInitialized = true;
-                } else {
-                    this._plane.material.map.image = partialResult.canvas;
-                    this._plane.material.map.needsUpdate = true;
-                }
-                this._viewer.impl.invalidate(true, true, true);
-            };
-
-            const tileResult = await this._fetchAndStitchTiles(
-                bounds,
-                viewport.zoom,
-                onProgress
-            );
-            if (!this._isActive) return;
+        let planeInitialized = false;
+        const onProgress = (partialResult) => {
+            if (!isCurrent()) return;
             if (!planeInitialized) {
-                this._updatePlane(tileResult);
+                this._updatePlane(partialResult);
+                planeInitialized = true;
+            } else {
+                this._plane.material.map.image = partialResult.canvas;
+                this._plane.material.map.needsUpdate = true;
             }
-            this._currentBoundsKey = boundsKey;
             this._viewer.impl.invalidate(true, true, true);
-        } finally {
-            this._isUpdating = false;
+        };
+
+        const tileResult = await this._fetchAndStitchTiles(
+            bounds,
+            viewport.zoom,
+            onProgress
+        );
+        if (!isCurrent()) return;
+        if (!planeInitialized) {
+            this._updatePlane(tileResult);
         }
+        this._currentBoundsKey = boundsKey;
+        this._viewer.impl.invalidate(true, true, true);
     }
 
     async _fetchAndStitchTiles(bounds, zoom, onProgress) {
-        const cacheKey = `${this._urlTemplate}_${zoom}_${bounds.west.toFixed(6)}_${bounds.south.toFixed(6)}_${bounds.east.toFixed(6)}_${bounds.north.toFixed(6)}`;
-        const cached = this._cache.get(cacheKey);
-        if (cached) return cached;
-
         let minTile = lonLatToTile(bounds.west, bounds.north, zoom);
         let maxTile = lonLatToTile(bounds.east, bounds.south, zoom);
 
@@ -233,9 +267,20 @@ export class TileOverlay {
             south: tileBoundsSE.lat,
         };
 
-        let loadedCount = 0;
+        let settledCount = 0;
         const totalTiles = xCount * yCount;
         const interval = this._progressInterval;
+
+        // Called when a downloaded tile finishes, whether it loaded or failed.
+        // Progressive rendering: update the visible plane periodically
+        // as tiles settle, controlled by progressInterval option.
+        // Always fires on the final tile to ensure complete render.
+        const onTileSettled = () => {
+            settledCount++;
+            if (onProgress && (settledCount % interval === 0 || settledCount === totalTiles)) {
+                onProgress({ canvas, geoBounds });
+            }
+        };
 
         const tilePromises = [];
         for (let x = minTile.x; x <= maxTile.x; x++) {
@@ -247,32 +292,30 @@ export class TileOverlay {
                 const dx = (x - minTile.x) * TILE_SIZE;
                 const dy = (y - minTile.y) * TILE_SIZE;
 
+                // Cached tiles are drawn immediately, without a progress update;
+                // if every tile is cached the caller applies the finished canvas.
+                const cached = this._cache.get(url);
+                if (cached) {
+                    ctx.drawImage(cached, dx, dy, TILE_SIZE, TILE_SIZE);
+                    settledCount++;
+                    continue;
+                }
+
                 tilePromises.push(
-                    new Promise((resolve) => {
-                        const img = new Image();
-                        img.crossOrigin = 'anonymous';
-                        img.onload = () => {
+                    this._loadTile(url).then(({ status, img }) => {
+                        if (status === 'cancelled') return;
+                        if (status === 'loaded') {
                             ctx.drawImage(img, dx, dy, TILE_SIZE, TILE_SIZE);
-                            loadedCount++;
-                            // Progressive rendering: update the visible plane periodically
-                            // as tiles load, controlled by progressInterval option.
-                            // Always fires on the final tile to ensure complete render.
-                            if (onProgress && (loadedCount % interval === 0 || loadedCount === totalTiles)) {
-                                onProgress({ canvas, geoBounds });
-                            }
-                            resolve();
-                        };
-                        img.onerror = () => {
-                            loadedCount++;
+                            this._cache.put(url, img);
+                        } else {
                             const errorInfo = { url, x, y, zoom };
                             if (this._onTileError) {
                                 this._onTileError(errorInfo);
                             } else {
                                 console.warn(`[bim-tile-overlay] Failed to load tile: ${url}`);
                             }
-                            resolve();
-                        };
-                        img.src = url;
+                        }
+                        onTileSettled();
                     })
                 );
             }
@@ -280,9 +323,49 @@ export class TileOverlay {
 
         await Promise.all(tilePromises);
 
-        const result = { canvas, geoBounds };
-        this._cache.put(cacheKey, result);
-        return result;
+        return { canvas, geoBounds };
+    }
+
+    /**
+     * Load a single tile image. Resolves with `{ status, img }`, where status is
+     * 'loaded', 'error', or 'cancelled' (by disable()). Never rejects.
+     */
+    _loadTile(url) {
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            const pending = { img, resolve };
+            this._pendingLoads.add(pending);
+            img.onload = () => {
+                this._pendingLoads.delete(pending);
+                resolve({ status: 'loaded', img });
+            };
+            img.onerror = () => {
+                this._pendingLoads.delete(pending);
+                resolve({ status: 'error', img: null });
+            };
+            img.src = url;
+        });
+    }
+
+    _cancelPendingLoads() {
+        for (const { img, resolve } of this._pendingLoads) {
+            img.onload = null;
+            img.onerror = null;
+            img.src = ''; // Aborts the download
+            resolve({ status: 'cancelled', img: null });
+        }
+        this._pendingLoads.clear();
+    }
+
+    /** Dispose a texture and free its stitched canvas's memory. */
+    _disposeTexture(texture) {
+        if (!texture) return;
+        texture.dispose();
+        if (texture.image) {
+            texture.image.width = 0;
+            texture.image.height = 0;
+        }
     }
 
     _updatePlane(tileResult) {
@@ -301,8 +384,8 @@ export class TileOverlay {
         const centerY = (nw.y + ne.y + sw.y + se.y) / 4;
         const rotation = Math.atan2(ne.y - nw.y, ne.x - nw.x);
 
-        // Dispose old texture and geometry to free GPU memory
-        if (this._plane.material.map) this._plane.material.map.dispose();
+        // Dispose old texture, its canvas and geometry to free memory
+        this._disposeTexture(this._plane.material.map);
         if (this._plane.geometry) this._plane.geometry.dispose();
 
         const texture = new THREE.Texture(canvas);

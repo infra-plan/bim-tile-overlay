@@ -54,7 +54,7 @@ Camera frustum corners
   → Convert hit points to WGS84 lon/lat
   → Determine visible geographic bounds
   → Calculate optimal tile zoom level
-  → Fetch XYZ tiles in parallel
+  → Fetch XYZ tiles in parallel (reusing cached tiles)
   → Stitch into single canvas texture
   → Map onto THREE.js plane in viewer space
   → Update on camera change (debounced)
@@ -88,17 +88,19 @@ const overlay = new TileOverlay(viewer, transformer, options);
 | `maxBounds` | `GeoBounds` | *required* | Geographic bounds to clip tile fetching |
 | `groundZ` | `number` | `modelBBox.min.z - 5` | Z elevation of the ground plane |
 | `debounceMs` | `number` | `150` | Camera change debounce delay (ms) |
-| `maxCacheSize` | `number` | `6` | Max cached stitched tile canvases |
+| `maxCachedTiles` | `number` | `512` | Max individual tiles kept in memory; cached tiles are drawn immediately when they come back into view |
 | `zoomScaleFactor` | `number` | `12` | Tile detail vs. camera distance. Higher = more detail |
 | `progressInterval` | `number` | `5` | Texture refresh frequency during tile loading (every N tiles). Always fires on the last tile. Set to 1 for per-tile updates. |
+| `onTileError` | `function` | `console.warn` | Called with `{ url, x, y, zoom }` when a tile fails to load |
 | `sceneName` | `string` | `'bim-tile-overlay'` | Viewer overlay scene name |
+| `maxCacheSize` | `number` | — | *Deprecated, ignored.* Use `maxCachedTiles` |
 
 **Methods:**
 
 | Method | Description |
 |--------|-------------|
 | `enable()` | Show the overlay and start tracking camera |
-| `disable()` | Hide the overlay, preserve cache for re-enabling |
+| `disable()` | Hide the overlay and cancel pending tile downloads; the tile cache is kept for re-enabling |
 | `destroy()` | Fully dispose all GPU resources and cache |
 | `update()` | Force an immediate tile refresh |
 
@@ -138,7 +140,7 @@ import { lonLatToTile, tileToLonLat, getViewportBounds, createTileCache } from '
 | `lonLatToTile(lon, lat, zoom)` | WGS84 → tile {x, y} coordinates |
 | `tileToLonLat(x, y, zoom)` | Tile coordinates → WGS84 (NW corner) |
 | `getViewportBounds(camera, transformer, options)` | Camera frustum → geographic bounds + zoom |
-| `createTileCache(maxSize?)` | LRU cache that frees bitmap memory on eviction |
+| `createTileCache(maxSize?)` | LRU cache; frees an entry's `canvas` memory on eviction |
 
 ## Finding Your CRS
 

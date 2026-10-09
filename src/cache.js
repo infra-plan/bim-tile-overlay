@@ -1,6 +1,7 @@
 /**
- * Create an LRU cache for stitched tile canvases.
- * On eviction, canvas dimensions are zeroed to free GPU memory.
+ * Create an LRU cache. TileOverlay uses it for loaded tile images, keyed by URL.
+ * On eviction, entries with a `canvas` property have its dimensions zeroed
+ * to free memory.
  *
  * @param {number} [maxSize=6] - Maximum number of cached entries
  * @returns {{ get: (key: string) => any, put: (key: string, value: any) => void, clear: () => void, size: () => number }}

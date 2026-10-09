@@ -42,7 +42,12 @@ export interface TileOverlayOptions {
     groundZ?: number;
     /** Debounce delay for camera change updates in ms. Default: 150 */
     debounceMs?: number;
-    /** Maximum number of cached stitched tile canvases. Default: 6 */
+    /**
+     * Maximum number of individual tiles kept in memory. Cached tiles are drawn
+     * immediately when they come back into view. Default: 512
+     */
+    maxCachedTiles?: number;
+    /** @deprecated Ignored; stitched canvases are no longer cached. Use `maxCachedTiles`. */
     maxCacheSize?: number;
     /**
      * Controls tile detail level relative to camera distance.
@@ -102,6 +107,8 @@ export interface ViewportOptions {
 export interface CameraState {
     position: ViewerCoords;
     target: ViewerCoords;
+    /** Camera screen-up direction. Defaults to world up (0, 0, 1). */
+    up?: ViewerCoords;
     fov: number;
     aspect: number;
 }
@@ -153,7 +160,7 @@ export function getViewportBounds(
     options: ViewportOptions
 ): ViewportResult;
 
-/** Create an LRU cache for stitched tile canvases */
+/** Create an LRU cache. Entries with a `canvas` property have it freed on eviction. */
 export function createTileCache(maxSize?: number): {
     get(key: string): any;
     put(key: string, value: any): void;
