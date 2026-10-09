@@ -182,6 +182,49 @@ describe('CoordinateTransformer', () => {
             expect(bounds.west).toBeCloseTo(Math.min(minLL.lon, maxLL.lon), 5);
             expect(bounds.east).toBeCloseTo(Math.max(minLL.lon, maxLL.lon), 5);
         });
+
+        it('covers all four corners of a rotated model', () => {
+            // 45° rotation: the min and max corners share the same longitude,
+            // so bounds derived from only those two would have zero width.
+            const config = createTestConfig({
+                cosTheta: Math.SQRT1_2,
+                sinTheta: Math.SQRT1_2,
+                translationX: 500000 * 3.28084,
+                translationY: 5070000 * 3.28084,
+                modelBBox: {
+                    min: { x: 0, y: 0, z: 0 },
+                    max: { x: 1000, y: 1000, z: 10 },
+                },
+            });
+            const t = new CoordinateTransformer(config);
+
+            const bounds = t.getModelBoundsLL84();
+
+            for (const [x, y] of [[0, 0], [1000, 0], [0, 1000], [1000, 1000]]) {
+                const ll = t.viewerToLonLat(x, y);
+                expect(ll.lon).toBeGreaterThanOrEqual(bounds.west - 1e-9);
+                expect(ll.lon).toBeLessThanOrEqual(bounds.east + 1e-9);
+                expect(ll.lat).toBeGreaterThanOrEqual(bounds.south - 1e-9);
+                expect(ll.lat).toBeLessThanOrEqual(bounds.north + 1e-9);
+            }
+            expect(bounds.east - bounds.west).toBeGreaterThan(0.001);
+        });
+    });
+
+    describe('multiple instances', () => {
+        it('a second transformer with a different CRS does not affect the first', () => {
+            const a = new CoordinateTransformer(createTestConfig());
+            const before = a.lonLatToViewer(16.0, 45.8);
+
+            new CoordinateTransformer({
+                ...createTestConfig(),
+                crs: '+proj=utm +zone=33 +ellps=GRS80 +units=m +no_defs',
+            });
+            const after = a.lonLatToViewer(16.0, 45.8);
+
+            expect(after.x).toBeCloseTo(before.x, 6);
+            expect(after.y).toBeCloseTo(before.y, 6);
+        });
     });
 
     describe('fromAPSViewer', () => {
@@ -206,6 +249,28 @@ describe('CoordinateTransformer', () => {
             const t = CoordinateTransformer.fromAPSViewer(mockViewer, CRS_3765);
             expect(t).toBeInstanceOf(CoordinateTransformer);
             expect(t.globalOffset).toEqual({ x: 10, y: 20, z: 5 });
+        });
+
+        it('defaults globalOffset to zero when the model has none', () => {
+            const mockViewer = {
+                model: {
+                    getData: () => ({
+                        metadata: {
+                            'custom values': {
+                                refPointTransform: createTestConfig().refPointTransform,
+                            },
+                        },
+                    }),
+                    getBoundingBox: () => ({
+                        min: { x: -50, y: -50, z: 0 },
+                        max: { x: 50, y: 50, z: 30 },
+                    }),
+                },
+            };
+
+            const t = CoordinateTransformer.fromAPSViewer(mockViewer, CRS_3765);
+            expect(t.globalOffset).toEqual({ x: 0, y: 0, z: 0 });
+            expect(Number.isFinite(t.lonLatToViewer(16.0, 45.8).x)).toBe(true);
         });
     });
 });

@@ -42,20 +42,23 @@ export interface TileOverlayOptions {
     groundZ?: number;
     /** Debounce delay for camera change updates in ms. Default: 150 */
     debounceMs?: number;
-    /** Maximum number of cached stitched tile canvases. Default: 6 */
+    /**
+     * Tile detail relative to distance. Tiles are refined until they appear at
+     * most 256 / detailScale px on screen, so 2 gives finer tiles. Default: 1
+     */
+    detailScale?: number;
+    /** Maximum tiles shown at once. When reached, distant ground stays coarser. Default: 500 */
+    maxTiles?: number;
+    /**
+     * Maximum number of loaded tile images kept in memory, so tiles coming back
+     * into view appear without downloading again. Default: 1024
+     */
+    maxCachedTiles?: number;
+    /** @deprecated Ignored. Use `maxCachedTiles`. */
     maxCacheSize?: number;
-    /**
-     * Controls tile detail level relative to camera distance.
-     * Higher values = more detailed tiles for the same view.
-     * Default: 12
-     */
+    /** @deprecated Ignored. Use `detailScale`. */
     zoomScaleFactor?: number;
-    /**
-     * How often to update the visible plane while tiles are still loading.
-     * For example, 5 means the texture refreshes after every 5th tile finishes loading,
-     * plus always on the very last tile. Set to 1 for per-tile updates.
-     * Default: 5
-     */
+    /** @deprecated Ignored. Tiles now appear individually as they load. */
     progressInterval?: number;
     /**
      * Callback when a tile fails to load. Called with `{ url, x, y, zoom }`.
@@ -102,6 +105,8 @@ export interface ViewportOptions {
 export interface CameraState {
     position: ViewerCoords;
     target: ViewerCoords;
+    /** Camera screen-up direction. Defaults to world up (0, 0, 1). */
+    up?: ViewerCoords;
     fov: number;
     aspect: number;
 }
@@ -112,13 +117,13 @@ export interface CameraState {
  */
 export class TileOverlay {
     constructor(viewer: any, transformer: CoordinateTransformer, options: TileOverlayOptions);
-    /** Enable the overlay and start listening to camera changes */
+    /** Enable the overlay and follow the camera; resolves once the visible tiles have loaded */
     enable(): Promise<void>;
-    /** Disable the overlay, preserving cache for re-enabling */
+    /** Remove the tiles and cancel pending downloads, keeping the tile cache */
     disable(): void;
     /** Fully destroy the overlay, releasing all GPU resources */
     destroy(): void;
-    /** Force an immediate tile update */
+    /** Update the tiles for the current camera now; resolves once they have loaded */
     update(): Promise<void>;
 }
 
@@ -153,7 +158,7 @@ export function getViewportBounds(
     options: ViewportOptions
 ): ViewportResult;
 
-/** Create an LRU cache for stitched tile canvases */
+/** Create an LRU cache. Entries with a `canvas` property have it freed on eviction. */
 export function createTileCache(maxSize?: number): {
     get(key: string): any;
     put(key: string, value: any): void;

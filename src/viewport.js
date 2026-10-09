@@ -4,8 +4,10 @@ const DEFAULT_ZOOM_SCALE_FACTOR = 12;
  * Calculate the geographic bounds visible in the camera's viewport by
  * ray-casting the four frustum corners onto a ground plane.
  *
- * @param {{ position: {x:number,y:number,z:number}, target: {x:number,y:number,z:number}, fov: number, aspect: number }} camera
- *   Camera state. In Autodesk Viewer: `viewer.navigation.getCamera()` provides position/target/fov/aspect.
+ * @param {{ position: {x:number,y:number,z:number}, target: {x:number,y:number,z:number}, up?: {x:number,y:number,z:number}, fov: number, aspect: number }} camera
+ *   Camera state. In Autodesk Viewer: `viewer.navigation.getCamera()` provides position/up/fov/aspect.
+ *   `up` is the camera's screen-up direction; if omitted, world up (0, 0, 1) is used, and a
+ *   camera looking straight down is treated as north-up.
  * @param {{ viewerToLonLat: (x:number, y:number) => {lon:number, lat:number} }} transformer
  *   Coordinate transformer with a `viewerToLonLat` method.
  * @param {Object} options
@@ -33,11 +35,21 @@ export function getViewportBounds(camera, transformer, options) {
     const fy = fwdY / fwdLen;
     const fz = fwdZ / fwdLen;
 
-    // right = normalize(forward x worldUp), worldUp = (0, 0, 1)
-    let rx = fy * 1 - fz * 0;
-    let ry = fz * 0 - fx * 1;
-    let rz = fx * 0 - fy * 0;
-    const rLen = Math.sqrt(rx * rx + ry * ry + rz * rz) || 1;
+    // right = normalize(forward x up), using the camera's up vector if given,
+    // otherwise world up (0, 0, 1)
+    const up = camera.up || { x: 0, y: 0, z: 1 };
+    let rx = fy * up.z - fz * up.y;
+    let ry = fz * up.x - fx * up.z;
+    let rz = fx * up.y - fy * up.x;
+    let rLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
+    if (rLen < 1e-9) {
+        // Forward is parallel to up (e.g. looking straight down with world up).
+        // Fall back to north (0, 1, 0) as up, giving a north-up view.
+        rx = fy * 0 - fz * 1;
+        ry = fz * 0 - fx * 0;
+        rz = fx * 1 - fy * 0;
+        rLen = Math.sqrt(rx * rx + ry * ry + rz * rz) || 1;
+    }
     rx /= rLen;
     ry /= rLen;
     rz /= rLen;
